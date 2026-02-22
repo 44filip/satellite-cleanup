@@ -1,0 +1,237 @@
+---
+# Satellite
+- name: "[ SAT | API ] Build Satellite API URL"
+  set_fact:
+    sat_server_url: "{{ sat_web_protocol }}://{{ sat_srv_fqdn }}"
+
+- name: "[ SAT | INVENTORY ] Gather all Satellite hosts"
+  redhat.satellite.resource_info:
+    server_url: "{{ sat_server_url }}"
+    username: "{{ sat_username }}"
+    password: "{{ sat_password }}"
+    validate_certs: "{{ validate_certs }}"
+    resource: hosts
+    organization: "{{ sat_organization }}"
+  register: satellite_hosts
+
+- name: "[ SAT | ASSERT ] Satellite inventory not empty"
+  assert:
+    that:
+      - satellite_hosts.resources is defined
+      - satellite_hosts.resources | length > 0
+    fail_msg: Satellite returned no hosts.
+
+- name: "[ SAT | FACT ] Satellite RHEL FQDNs"
+  set_fact:
+    satellite_rhel_fqdns: >-
+      {{
+        satellite_hosts.resources
+        | selectattr('operatingsystem_family', 'equalto', 'Redhat')
+        | selectattr('operatingsystem_major', 'defined')
+        | selectattr('name', 'match', '^(gva|ext|org|gvt)')
+        | map(attribute='name')
+        | map('lower')
+        | sort
+        | list
+      }}
+
+- name: "[ SAT | FACT ] Satellite RHEL short hostnames"
+  set_fact:
+    satellite_rhel_shortnames: >-
+      {{ satellite_rhel_fqdns
+         | map('split', '.')
+         | map('first')
+         | sort
+         | list }}
+
+- name: "[ SAT | ASSERT ] Satellite RHEL hosts found"
+  assert:
+    that:
+      - satellite_rhel_fqdns | length > 0
+    fail_msg: No RHEL hosts matched filters in Satellite.
+
+- name: "[ DEBUG ] Satellite RHEL FQDN list"
+  debug:
+    msg: "Satellite RHEL FQDNs ({{ satellite_rhel_fqdns | length }}): {{ satellite_rhel_fqdns }}"
+  when: debugmode | bool
+
+- name: "[ DEBUG ] Satellite RHEL shortname list"
+  debug:
+    msg: "Satellite RHEL shortnames ({{ satellite_rhel_shortnames | length }}): {{ satellite_rhel_shortnames }}"
+  when: debugmode | bool
+
+# vCenter
+- name: "[ VCENTER | INVENTORY ] Gather all virtual machines"
+  delegate_to: localhost
+  community.vmware.vmware_vm_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+  register: vm_info
+  retries: 6
+  delay: 10
+  until: vm_info is succeeded
+
+- name: "[ VCENTER | ASSERT ] vCenter inventory not empty"
+  assert:
+    that:
+      - vm_info.virtual_machines is defined
+      - vm_info.virtual_machines | length > 0
+    fail_msg: "vCenter returned no virtual machines."
+
+- name: "[ VCENTER | FACT ] All RHEL VMs from vCenter"
+  set_fact:
+    vcenter_rhel_vms: >-
+      {{
+        vm_info.virtual_machines
+        | selectattr('guest_fullname', 'defined')
+        | selectattr('guest_fullname', 'search', 'Red Hat Enterprise Linux')
+        | selectattr('guest_name', 'match', '^(gva|ext|org|gvt)')
+        | list
+      }}
+
+- name: "[ VCENTER | ASSERT ] RHEL VMs found"
+  assert:
+    that:
+      - vcenter_rhel_vms | length > 0
+    fail_msg: "No RHEL virtual machines matched filters in vCenter."
+
+- name: "[ VCENTER | FACT ] RHEL VMs powered ON"
+  set_fact:
+    vcenter_rhel_vms_on: >-
+      {{
+        vcenter_rhel_vms
+        | selectattr('power_state', 'equalto', 'poweredOn')
+        | map(attribute='guest_name')
+        | map('lower')
+        | list
+        | sort
+      }}
+
+- name: "[ VCENTER | FACT ] RHEL VMs powered OFF"
+  set_fact:
+    vcenter_rhel_vms_off: >-
+      {{
+        vcenter_rhel_vms
+        | selectattr('power_state', 'equalto', 'poweredOff')
+        | map(attribute='guest_name')
+        | map('lower')
+        | list
+        | sort
+      }}
+
+- name: "[ VCENTER | FACT ] vCenter VMs with '_drp'"
+  set_fact:
+    vcenter_drp_vms: >-
+      {{
+        (vcenter_rhel_vms_on + vcenter_rhel_vms_off)
+        | select('search', '_drp')
+        | sort
+      }}
+
+- name: "[ VCENTER | FACT ] vCenter VMs with '-removalinprogress'"
+  set_fact:
+    vcenter_removal_vms: >-
+      {{
+        (vcenter_rhel_vms_on + vcenter_rhel_vms_off)
+        | select('search', '-removalinprogress')
+        | sort
+      }}
+
+# Lists, diff and deletion
+- name: "[ DIFF | FACT ] Servers in Satellite but not in vCenter"
+  set_fact:
+    sat_only_vms: >-
+      {{
+        satellite_rhel_shortnames
+        | difference(vcenter_rhel_vms_on + vcenter_rhel_vms_off)
+        | sort
+      }}
+
+- name: "[ DEBUG | DIFF ] Satellite hosts missing in vCenter"
+  debug:
+    msg:
+      missing_in_vcenter_count: "{{ sat_only_vms | length }}"
+      missing_in_vcenter: "{{ sat_only_vms }}"
+  when: debugmode | bool and sat_only_vms | length > 0
+
+- name: "[ SAT | INFO ] Nothing to delete from Satellite"
+  debug:
+    msg: "No Satellite-only hosts found. Nothing to delete."
+  when: sat_only_vms | length == 0
+
+- name: "[ SAT | FACT ] Build FQDN deletion list from shortnames"
+  set_fact:
+    sat_hosts_to_delete: >-
+      {{
+        satellite_rhel_fqdns
+        | select('search', '^(?:' ~ sat_only_vms | join('|') ~ ')')
+        | sort
+        | list
+      }}
+  when: sat_only_vms | length > 0
+
+- name: "[ SAT | ASSERT ] Hosts resolved for deletion"
+  assert:
+    that:
+      - sat_hosts_to_delete is defined
+      - sat_hosts_to_delete | length > 0
+    fail_msg: "No Satellite FQDNs matched shortname list."
+  when: sat_only_vms | length > 0
+
+- name: "[ SAT | ASSERT ] Prevent mass deletion"
+  assert:
+    that:
+      - (sat_hosts_to_delete | default([])) | length < 20
+    fail_msg: "More than 20 Satellite hosts would be deleted. Aborting."
+  when: (sat_hosts_to_delete | default([])) | length > 0
+
+- name: "[ SAT | DEBUG ] FQDNs that will be deleted"
+  debug:
+    msg:
+      delete_count: "{{ sat_hosts_to_delete | default([]) | length }}"
+      delete_list: "{{ sat_hosts_to_delete | default([]) }}"
+  when: debugmode | bool and (sat_hosts_to_delete | default([])) | length > 0
+
+- name: "[ SAT | DELETE ] Remove hosts only in Satellite"
+  loop: "{{ sat_hosts_to_delete | default([]) }}"
+  redhat.satellite.host:
+    username: "{{ sat_username }}"
+    password: "{{ sat_password }}"
+    server_url: "{{ sat_server_url }}"
+    name: "{{ item }}"
+    state: absent
+    validate_certs: "{{ validate_certs }}"
+  register: delete_host_result
+  retries: 6
+  delay: 10
+  delegate_to: localhost
+  become: false
+  when: (sat_hosts_to_delete | default([])) | length > 0
+
+- name: "[ SAT | DELETE ] Deletion results"
+  debug:
+    msg:
+      deleted_hosts: "{{ delete_host_result.results | selectattr('failed', 'equalto', false) | map(attribute='item') | list }}"
+      failed_hosts: "{{ delete_host_result.results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+  when: (sat_hosts_to_delete | default([])) | length > 0
+
+# To be used in the future
+# - name: "[ DEBUG ] vCenter RHEL VMs (powered ON/OFF)"
+#   debug:
+#     msg:
+#       powered_on_count: "{{ vcenter_rhel_vms_on | length }}"
+#       powered_on: "{{ vcenter_rhel_vms_on }}"
+#       powered_off_count: "{{ vcenter_rhel_vms_off | length }}"
+#       powered_off: "{{ vcenter_rhel_vms_off }}"
+#   when: debugmode | bool
+
+# - name: "[ DEBUG | REMOVAL ] vCenter filtered lists"
+#   debug:
+#     msg:
+#       vcenter_drp_count: "{{ vcenter_drp_vms | length }}"
+#       vcenter_drp: "{{ vcenter_drp_vms }}"
+#       vcenter_removal_count: "{{ vcenter_removal_vms | length }}"
+#       vcenter_removal: "{{ vcenter_removal_vms }}"
+#   when: debugmode | bool
