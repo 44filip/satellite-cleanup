@@ -43,7 +43,7 @@ The tasks delegate to `localhost`, so the AWX execution node needs network acces
 | Satellite | `sat_username`, `sat_password` |
 | vCenter | `vcenter_hostname`, `vcenter_username`, `vcenter_password` |
 
-### AWX survey vars
+### AWX group_vars
 
 | Variable | Description |
 |---|---|
