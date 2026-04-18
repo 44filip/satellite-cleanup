@@ -1,0 +1,7 @@
+---
+# Satellite protocol
+sat_web_protocol: "https"
+
+# TSL certificates
+validate_certs: false
+vcenter_validate_certs: true
