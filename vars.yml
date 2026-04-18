@@ -2,6 +2,7 @@
 # Satellite protocol and vars
 sat_web_protocol: "https"
 sat_srv_fqdn: "fqdn.sat.example"
+sat_organization: "EXAMPLE"
 
 # TSL certificates
 validate_certs: false
