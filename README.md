@@ -32,6 +32,7 @@ The tasks delegate to `localhost`, so the AWX execution node needs network acces
 |---|---|---|
 | `sat_web_protocol` | Protocol used to reach Satellite (`http`/`https`) | `https` |
 | `sat_srv_fqdn` | Satellite server FQDN |
+| `sat_organization` | Satellite organization for filtering |
 | `validate_certs` | Validate TLS certificates for Satellite API calls | `false` |
 | `vcenter_validate_certs` | Validate TLS certificates for vCenter API calls | `true` |
 
