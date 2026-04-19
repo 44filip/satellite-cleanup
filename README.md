@@ -1,6 +1,6 @@
 # satellite_cleanup
 
-Ansible task that removes stale RHEL hosts from Satellite that no longer exist in vCenter. 
+Ansible task file that removes stale RHEL hosts from Satellite that no longer exist in vCenter.
 
 ---
 
